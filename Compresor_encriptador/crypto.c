@@ -17,6 +17,26 @@
  */
 
 /* ------------------------------------------------------------------ */
+/* Limpieza segura de memoria — garantizada contra optimización        */
+/* ------------------------------------------------------------------ */
+
+/*
+ * secure_zero — borra N bytes de memoria usando un puntero volatile.
+ *
+ * Sin volatile, el compilador con -O2 puede detectar que el buffer
+ * no se lee después del memset y eliminarlo como "código muerto".
+ * El cast a volatile uint8_t* fuerza la escritura física en RAM,
+ * haciendo que la llave no quede accesible incluso en un core dump.
+ *
+ * Este es el mismo mecanismo que usa explicit_bzero() en Linux glibc.
+ */
+static void secure_zero(void *ptr, size_t n) {
+    volatile uint8_t *p = (volatile uint8_t *)ptr;
+    for (size_t i = 0; i < n; i++)
+        p[i] = 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Tablas AES estándar (FIPS 197)                                      */
 /* ------------------------------------------------------------------ */
 
@@ -94,21 +114,19 @@ static const uint8_t INV_SBOX[256] = {
 
 /* Constantes de ronda Rcon (derivadas de x^i en GF(2^8)) */
 static const uint8_t RCON[11] = {
-    0x00, /* índice 0 no se usa */
+    0x00,
     0x01, 0x02, 0x04, 0x08, 0x10,
     0x20, 0x40, 0x80, 0x1b, 0x36
 };
 
 /* ------------------------------------------------------------------ */
-/* Aritmética en GF(2^8) — necesaria para MixColumns                  */
+/* Aritmética en GF(2^8)                                               */
 /* ------------------------------------------------------------------ */
 
-/* Multiplicación por 2 en GF(2^8) con el polinomio irreducible 0x1b */
 static inline uint8_t xtime(uint8_t b) {
     return (uint8_t)((b << 1) ^ ((b >> 7) & 1 ? 0x1b : 0x00));
 }
 
-/* Multiplicación general en GF(2^8) */
 static inline uint8_t gmul(uint8_t a, uint8_t b) {
     uint8_t p = 0;
     for (int i = 0; i < 8; i++) {
@@ -125,114 +143,63 @@ static inline uint8_t gmul(uint8_t a, uint8_t b) {
 /* Key Expansion (Key Schedule) AES-128                               */
 /* ------------------------------------------------------------------ */
 
-/*
- * Genera las 11 round keys (44 palabras de 4 bytes = 176 bytes total)
- * a partir de la llave de 16 bytes.
- */
 static void key_expansion(const uint8_t *key, uint8_t *round_keys) {
-    /* Las primeras 16 bytes son la llave original */
     memcpy(round_keys, key, 16);
-
     for (int i = 4; i < 44; i++) {
         uint8_t temp[4];
         memcpy(temp, round_keys + (i - 1) * 4, 4);
-
         if (i % 4 == 0) {
-            /* RotWord: rotar a la izquierda un byte */
             uint8_t t = temp[0];
             temp[0] = temp[1]; temp[1] = temp[2];
             temp[2] = temp[3]; temp[3] = t;
-            /* SubWord: aplicar S-Box a cada byte */
             temp[0] = SBOX[temp[0]]; temp[1] = SBOX[temp[1]];
             temp[2] = SBOX[temp[2]]; temp[3] = SBOX[temp[3]];
-            /* XOR con Rcon */
             temp[0] ^= RCON[i / 4];
         }
-
-        /* w[i] = w[i-4] XOR temp */
-        for (int j = 0; j < 4; j++) {
-            round_keys[i * 4 + j] =
-                round_keys[(i - 4) * 4 + j] ^ temp[j];
-        }
+        for (int j = 0; j < 4; j++)
+            round_keys[i * 4 + j] = round_keys[(i - 4) * 4 + j] ^ temp[j];
     }
 }
 
 /* ------------------------------------------------------------------ */
-/* Las 4 transformaciones de AES (cifrado)                            */
+/* Las 4 transformaciones de AES                                       */
 /* ------------------------------------------------------------------ */
 
-/* SubBytes: sustituir cada byte del state con su valor en el S-Box */
 static void sub_bytes(uint8_t state[16]) {
-    for (int i = 0; i < 16; i++)
-        state[i] = SBOX[state[i]];
+    for (int i = 0; i < 16; i++) state[i] = SBOX[state[i]];
 }
 
-/* InvSubBytes: inversa de SubBytes (para descifrado) */
 static void inv_sub_bytes(uint8_t state[16]) {
-    for (int i = 0; i < 16; i++)
-        state[i] = INV_SBOX[state[i]];
+    for (int i = 0; i < 16; i++) state[i] = INV_SBOX[state[i]];
 }
 
-/*
- * ShiftRows: desplaza las filas del state hacia la izquierda.
- * El state se interpreta como una matriz 4×4 en orden columna-mayor:
- *   state[0..3]  = columna 0
- *   state[4..7]  = columna 1
- *   state[8..11] = columna 2
- *   state[12..15]= columna 3
- *
- * En representación por filas:
- *   fila 0: no se desplaza
- *   fila 1: desplazamiento 1 a la izquierda
- *   fila 2: desplazamiento 2
- *   fila 3: desplazamiento 3
- */
 static void shift_rows(uint8_t s[16]) {
     uint8_t t;
-
-    /* Fila 1: shift izquierda 1 */
-    t = s[1]; s[1] = s[5]; s[5] = s[9]; s[9] = s[13]; s[13] = t;
-
-    /* Fila 2: shift izquierda 2 */
-    t = s[2]; s[2] = s[10]; s[10] = t;
-    t = s[6]; s[6] = s[14]; s[14] = t;
-
-    /* Fila 3: shift izquierda 3 (= shift derecha 1) */
-    t = s[15]; s[15] = s[11]; s[11] = s[7]; s[7] = s[3]; s[3] = t;
+    t = s[1];  s[1]  = s[5];  s[5]  = s[9];  s[9]  = s[13]; s[13] = t;
+    t = s[2];  s[2]  = s[10]; s[10] = t;
+    t = s[6];  s[6]  = s[14]; s[14] = t;
+    t = s[15]; s[15] = s[11]; s[11] = s[7];  s[7]  = s[3];  s[3]  = t;
 }
 
-/* InvShiftRows: inversa (shift a la derecha) */
 static void inv_shift_rows(uint8_t s[16]) {
     uint8_t t;
-
-    /* Fila 1: shift derecha 1 */
     t = s[13]; s[13] = s[9]; s[9] = s[5]; s[5] = s[1]; s[1] = t;
-
-    /* Fila 2: shift derecha 2 */
-    t = s[2]; s[2] = s[10]; s[10] = t;
-    t = s[6]; s[6] = s[14]; s[14] = t;
-
-    /* Fila 3: shift derecha 3 */
-    t = s[3]; s[3] = s[7]; s[7] = s[11]; s[11] = s[15]; s[15] = t;
+    t = s[2];  s[2]  = s[10]; s[10] = t;
+    t = s[6];  s[6]  = s[14]; s[14] = t;
+    t = s[3];  s[3]  = s[7];  s[7]  = s[11]; s[11] = s[15]; s[15] = t;
 }
 
-/*
- * MixColumns: mezcla cada columna del state en GF(2^8).
- * Es la operación de "difusión": un byte de entrada afecta a todos
- * los bytes de la columna de salida.
- */
 static void mix_columns(uint8_t s[16]) {
     for (int c = 0; c < 4; c++) {
         uint8_t *col = s + c * 4;
         uint8_t a0 = col[0], a1 = col[1], a2 = col[2], a3 = col[3];
-        col[0] = gmul(a0, 2) ^ gmul(a1, 3) ^ a2        ^ a3;
-        col[1] = a0          ^ gmul(a1, 2) ^ gmul(a2, 3) ^ a3;
-        col[2] = a0          ^ a1          ^ gmul(a2, 2) ^ gmul(a3, 3);
-        col[3] = gmul(a0, 3) ^ a1          ^ a2          ^ gmul(a3, 2);
+        col[0] = gmul(a0,2) ^ gmul(a1,3) ^ a2         ^ a3;
+        col[1] = a0         ^ gmul(a1,2) ^ gmul(a2,3) ^ a3;
+        col[2] = a0         ^ a1         ^ gmul(a2,2) ^ gmul(a3,3);
+        col[3] = gmul(a0,3) ^ a1         ^ a2         ^ gmul(a3,2);
     }
 }
 
-/* InvMixColumns: inversa con los coeficientes {14,11,13,9} */
 static void inv_mix_columns(uint8_t s[16]) {
     for (int c = 0; c < 4; c++) {
         uint8_t *col = s + c * 4;
@@ -244,77 +211,53 @@ static void inv_mix_columns(uint8_t s[16]) {
     }
 }
 
-/* AddRoundKey: XOR del state con la round key actual */
 static void add_round_key(uint8_t state[16], const uint8_t *round_key) {
-    for (int i = 0; i < 16; i++)
-        state[i] ^= round_key[i];
+    for (int i = 0; i < 16; i++) state[i] ^= round_key[i];
 }
 
 /* ------------------------------------------------------------------ */
 /* AES-128: cifrar/descifrar un bloque de 16 bytes                    */
 /* ------------------------------------------------------------------ */
 
-/*
- * Cifra un bloque de exactamente 16 bytes.
- * round_keys: 176 bytes generados por key_expansion().
- */
-static void aes128_encrypt_block(const uint8_t *in,
-                                  uint8_t       *out,
+static void aes128_encrypt_block(const uint8_t *in, uint8_t *out,
                                   const uint8_t *round_keys) {
     uint8_t state[16];
     memcpy(state, in, 16);
-
-    /* Ronda inicial: solo AddRoundKey */
     add_round_key(state, round_keys);
-
-    /* 9 rondas completas */
     for (int round = 1; round <= 9; round++) {
         sub_bytes(state);
         shift_rows(state);
         mix_columns(state);
         add_round_key(state, round_keys + round * 16);
     }
-
-    /* Ronda final: sin MixColumns */
     sub_bytes(state);
     shift_rows(state);
     add_round_key(state, round_keys + 10 * 16);
-
     memcpy(out, state, 16);
 }
 
-/* Descifra un bloque de 16 bytes */
-static void aes128_decrypt_block(const uint8_t *in,
-                                  uint8_t       *out,
+static void aes128_decrypt_block(const uint8_t *in, uint8_t *out,
                                   const uint8_t *round_keys) {
     uint8_t state[16];
     memcpy(state, in, 16);
-
-    /* Ronda inicial (con la última round key) */
     add_round_key(state, round_keys + 10 * 16);
-
-    /* 9 rondas inversas */
     for (int round = 9; round >= 1; round--) {
         inv_shift_rows(state);
         inv_sub_bytes(state);
         add_round_key(state, round_keys + round * 16);
         inv_mix_columns(state);
     }
-
-    /* Ronda final inversa */
     inv_shift_rows(state);
     inv_sub_bytes(state);
     add_round_key(state, round_keys);
-
     memcpy(out, state, 16);
 }
 
 /* ------------------------------------------------------------------ */
-/* API pública: init, passphrase, encrypt, decrypt, clear             */
+/* API pública                                                          */
 /* ------------------------------------------------------------------ */
 
-int crypto_init(CryptoContext *ctx,
-                const uint8_t *key, const uint8_t *iv) {
+int crypto_init(CryptoContext *ctx, const uint8_t *key, const uint8_t *iv) {
     if (!ctx || !key || !iv) return -1;
     memcpy(ctx->key, key, AES_KEY_SIZE);
     memcpy(ctx->iv,  iv,  AES_IV_SIZE);
@@ -322,126 +265,78 @@ int crypto_init(CryptoContext *ctx,
     return 0;
 }
 
-/*
- * Deriva una llave de 16 bytes de una passphrase usando un hash
- * iterativo simple. No es PBKDF2, pero demuestra el concepto.
- */
 int crypto_from_passphrase(CryptoContext *ctx, const char *passphrase) {
     if (!ctx || !passphrase || passphrase[0] == '\0') return -1;
-
     size_t plen = strlen(passphrase);
-
-    /* Inicializar llave con patrón determinista */
     for (int i = 0; i < AES_KEY_SIZE; i++)
         ctx->key[i] = (uint8_t)(0x36 ^ i);
-
-    /* Mezclar cada byte de la passphrase en la llave */
     for (size_t i = 0; i < plen * 1024; i++) {
         int ki = (int)(i % AES_KEY_SIZE);
         ctx->key[ki] ^= (uint8_t)(passphrase[i % plen]);
-        /* Rotación para propagar bits */
-        ctx->key[ki] = (uint8_t)((ctx->key[ki] << 3) |
-                                  (ctx->key[ki] >> 5));
-        /* Combinar con el byte anterior */
+        ctx->key[ki] = (uint8_t)((ctx->key[ki] << 3) | (ctx->key[ki] >> 5));
         ctx->key[(ki + 1) % AES_KEY_SIZE] ^= ctx->key[ki];
     }
-
-    /* IV derivado de la llave con permutación */
     for (int i = 0; i < AES_IV_SIZE; i++)
         ctx->iv[i] = (uint8_t)(ctx->key[(i * 7 + 3) % AES_KEY_SIZE]
                                ^ (uint8_t)(i * 0x5A));
-
     ctx->initialized = 1;
     return 0;
 }
 
 int crypto_gen_iv(CryptoContext *ctx) {
     if (!ctx) return -1;
-
-    /* Leer bytes aleatorios del CSPRNG del kernel */
     int fd = open("/dev/urandom", O_RDONLY);
-    if (fd < 0) {
-        perror("open /dev/urandom");
-        return -1;
-    }
+    if (fd < 0) { perror("open /dev/urandom"); return -1; }
     ssize_t n = read(fd, ctx->iv, AES_IV_SIZE);
     close(fd);
-
     if (n != AES_IV_SIZE) {
-        fprintf(stderr, "crypto_gen_iv: no se pudieron leer %d bytes\n",
-                AES_IV_SIZE);
+        fprintf(stderr, "crypto_gen_iv: no se pudieron leer %d bytes\n", AES_IV_SIZE);
         return -1;
     }
     return 0;
 }
 
-/*
- * AES-128-CBC Encrypt con PKCS#7 padding.
- *
- * Modo CBC: cada bloque de plaintext se XOR con el ciphertext anterior
- * antes de cifrarse. El primer bloque se XOR con el IV.
- *
- *   C[0] = AES_Enc(P[0] XOR IV)
- *   C[i] = AES_Enc(P[i] XOR C[i-1])
- */
 ssize_t aes128_cbc_encrypt(const CryptoContext *ctx,
                             const uint8_t *in,  size_t in_len,
                             uint8_t       *out, size_t out_cap) {
     if (!ctx || !ctx->initialized || !in || !out) return -1;
 
-    /* Tamaño con padding PKCS#7: siempre hay padding (mín 1 byte) */
-    size_t pad_len  = AES_BLOCK_SIZE - (in_len % AES_BLOCK_SIZE);
-    size_t total    = in_len + pad_len;
+    size_t pad_len = AES_BLOCK_SIZE - (in_len % AES_BLOCK_SIZE);
+    size_t total   = in_len + pad_len;
 
     if (out_cap < total) {
         fprintf(stderr, "aes128_cbc_encrypt: buffer insuficiente\n");
         return -1;
     }
 
-    /* Construir buffer con padding en memoria temporal */
     uint8_t *padded = (uint8_t *)malloc(total);
     if (!padded) { perror("malloc padded"); return -1; }
-
     memcpy(padded, in, in_len);
-    /* PKCS#7: rellenar con el valor del padding */
     for (size_t i = in_len; i < total; i++)
         padded[i] = (uint8_t)pad_len;
 
-    /* Generar round keys */
+    /* ---- round_keys: material criptográfico sensible en el stack ---- */
     uint8_t round_keys[176];
     key_expansion(ctx->key, round_keys);
 
-    /* CBC: cifrar bloque a bloque */
-    const uint8_t *prev = ctx->iv;  /* primer XOR con IV */
+    const uint8_t *prev = ctx->iv;
     uint8_t block_in[AES_BLOCK_SIZE];
 
     for (size_t b = 0; b < total; b += AES_BLOCK_SIZE) {
-        /* XOR plaintext con bloque anterior (o IV) */
         for (int j = 0; j < AES_BLOCK_SIZE; j++)
             block_in[j] = padded[b + j] ^ prev[j];
-
-        /* Cifrar el bloque */
         aes128_encrypt_block(block_in, out + b, round_keys);
-
-        /* El próximo bloque usará este ciphertext como "IV" */
         prev = out + b;
     }
 
-    /* Limpiar material sensible del stack */
-    memset(padded, 0, total);
+    /* Limpieza segura con volatile — idéntico a explicit_bzero() */
+    secure_zero(padded, total);
     free(padded);
-    memset(round_keys, 0, sizeof(round_keys));
+    secure_zero(round_keys, sizeof(round_keys)); /* ← volatile: no eliminable por -O2 */
 
     return (ssize_t)total;
 }
 
-/*
- * AES-128-CBC Decrypt con remoción de PKCS#7 padding.
- *
- * Inverso de CBC:
- *   P[0] = AES_Dec(C[0]) XOR IV
- *   P[i] = AES_Dec(C[i]) XOR C[i-1]
- */
 ssize_t aes128_cbc_decrypt(const CryptoContext *ctx,
                             const uint8_t *in,  size_t in_len,
                             uint8_t       *out, size_t out_cap) {
@@ -455,11 +350,9 @@ ssize_t aes128_cbc_decrypt(const CryptoContext *ctx,
         return -1;
     }
 
-    /* Generar round keys */
     uint8_t round_keys[176];
     key_expansion(ctx->key, round_keys);
 
-    /* CBC inverso: descifrar bloque a bloque */
     const uint8_t *prev = ctx->iv;
     uint8_t block_out[AES_BLOCK_SIZE];
 
@@ -470,34 +363,31 @@ ssize_t aes128_cbc_decrypt(const CryptoContext *ctx,
         prev = in + b;
     }
 
-    /* Remover padding PKCS#7 */
     uint8_t pad_val = out[in_len - 1];
     if (pad_val == 0 || pad_val > AES_BLOCK_SIZE) {
-        fprintf(stderr, "aes128_cbc_decrypt: padding PKCS#7 inválido (val=%u)\n",
-                pad_val);
-        memset(round_keys, 0, sizeof(round_keys));
+        fprintf(stderr, "aes128_cbc_decrypt: padding PKCS#7 inválido (val=%u)\n", pad_val);
+        secure_zero(round_keys, sizeof(round_keys));
         return -1;
     }
-    /* Verificar que todos los bytes de padding son iguales */
     for (size_t i = in_len - pad_val; i < in_len; i++) {
         if (out[i] != pad_val) {
             fprintf(stderr, "aes128_cbc_decrypt: padding PKCS#7 corrupto\n");
-            memset(round_keys, 0, sizeof(round_keys));
+            secure_zero(round_keys, sizeof(round_keys));
             return -1;
         }
     }
 
-    memset(round_keys, 0, sizeof(round_keys));
+    secure_zero(round_keys, sizeof(round_keys));
     return (ssize_t)(in_len - pad_val);
 }
 
 /*
- * Borrado seguro de la llave en RAM.
- * volatile evita que el compilador elimine el memset como "código muerto".
+ * crypto_clear — borra el CryptoContext completo de RAM de forma segura.
+ *
+ * Usa el mismo mecanismo volatile de secure_zero(). Si el proceso
+ * termina abruptamente después de esto, la llave ya no existe en memoria.
  */
 void crypto_clear(CryptoContext *ctx) {
     if (!ctx) return;
-    volatile uint8_t *p = (volatile uint8_t *)ctx;
-    for (size_t i = 0; i < sizeof(CryptoContext); i++)
-        p[i] = 0;
+    secure_zero(ctx, sizeof(CryptoContext));
 }
