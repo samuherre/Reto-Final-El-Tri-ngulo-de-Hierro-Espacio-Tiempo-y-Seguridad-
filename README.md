@@ -274,6 +274,61 @@ time ./editor < /tmp/mi_input.txt
 
 ---
 
+
+---
+
+## Criptografía simétrica — Pipeline RLE → AES-128-CBC
+
+### Activar el modo seguro
+
+```bash
+# En el menú del editor:
+[k]  → ingresar passphrase (la llave se deriva y se guarda en RAM)
+[e]  → guardar con pipeline completo: texto → RLE → AES-128-CBC → disco
+```
+
+Al iniciar, el editor bloquea la página de RAM que contiene la llave con `mlock()`, impidiendo que el kernel la envíe al área de Swap:
+
+```
+[SEGURIDAD] Página de llave bloqueada en RAM (no va a Swap).
+```
+
+### Orden de transformaciones (crítico)
+
+```
+CORRECTO:   texto plano → rle_compress() → aes128_cbc_encrypt() → write()
+INCORRECTO: texto plano → aes128_cbc_encrypt() → rle_compress() → write()
+```
+
+AES produce salida de alta entropía (ruido uniforme). Comprimir después de cifrar es inútil porque no hay patrones. Comprimir primero aprovecha la baja entropía del texto natural y reduce el bus I/O en ~70%.
+
+### Gestión segura de la llave
+
+| Técnica | Dónde se aplica | Por qué |
+|---|---|---|
+| `volatile uint8_t*` en `secure_zero()` | Passphrase, round keys, CryptoContext | Previene eliminación del `memset` por el compilador `-O2` |
+| `mlock(&crypto_ctx)` en `main.c` | Estructura con la llave AES | Prohíbe que el kernel envíe la página al Swap en disco |
+| `munlock()` + `crypto_clear()` al salir | Final del programa | Borra la llave y libera la página |
+
+La llave nunca se escribe al disco. Existe únicamente en DRAM volátil durante la sesión del proceso.
+
+### Formato del archivo `.sec`
+
+```
+[ SecureHeader (bytes 0-N) ]
+  magic           : MAGIC_SECURE
+  original_size   : tamaño del texto original
+  compressed_size : tamaño tras RLE
+  encrypted_size  : tamaño tras AES (múltiplo de 16, PKCS#7)
+  algorithm       : ALGO_RLE_AES
+  checksum        : CRC32 del ciphertext
+  iv[16]          : IV aleatorio de /dev/urandom (no es secreto)
+
+[ Payload: ciphertext AES-128-CBC ]
+```
+
+El IV se almacena en el header porque es necesario para descifrar y no compromete la confidencialidad por sí solo. Sin la llave, el ciphertext es ruido ilegible.
+
 ## Verificación de memoria con Valgrind
 
 ```bash
@@ -313,3 +368,10 @@ Cada llamada a `write()` es un context switch User→Kernel→User. Un editor qu
 ### ¿Por qué `__attribute__((packed))` en los structs?
 
 Sin `packed`, el compilador agrega bytes de relleno entre campos para satisfacer requisitos de alineación del procesador. Esto haría que el `FileHeader` ocupe más de 20 bytes y el layout en disco no sería determinístico entre compiladores o arquitecturas. `__attribute__((packed))` garantiza que cada campo ocupa exactamente sus bytes declarados, y `_Static_assert` verifica esto en tiempo de compilación.
+### ¿Por qué `mlock()` y no solo `memset` para proteger la llave?
+
+Un `memset` convencional puede ser eliminado por el compilador con optimización `-O2` si detecta que el buffer no se lee después (código muerto). Incluso si el `memset` se ejecuta, sin `mlock()` el sistema operativo puede haber enviado esa página al Swap antes de que la borráramos, dejando la llave en disco. `mlock()` es la única garantía de que la página nunca abandonó la DRAM.
+
+### ¿Por qué `volatile` en `secure_zero()` y no `explicit_bzero()`?
+
+`explicit_bzero()` es la solución estándar en sistemas modernos y hace exactamente esto. La implementación manual con `volatile uint8_t*` es equivalente y didácticamente más clara: evidencia directa de por qué el compilador no puede eliminar la escritura. Ambas soluciones son correctas; la implementación propia demuestra comprensión del mecanismo subyacente.
