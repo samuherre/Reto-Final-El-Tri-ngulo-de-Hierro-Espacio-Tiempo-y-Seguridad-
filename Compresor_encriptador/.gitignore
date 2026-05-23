@@ -1,0 +1,26 @@
+# Crear el .gitignore en la raíz del proyecto
+cat > .gitignore << 'EOF'
+# Metadatos de zona de Windows (WSL artifact)
+*:Zone.Identifier
+
+# Binarios compilados
+editor
+classic
+*.o
+
+# Archivos generados por el editor
+*.ed
+*.ed.mmap
+*.ed.rich
+*.rich
+
+# Archivos temporales del benchmark
+salida_clasica.txt
+archivo_bench.ed
+archivo_bench2.ed
+archivo_valgrind.ed
+/tmp/
+
+# Valgrind
+vgcore.*
+EOF

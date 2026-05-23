@@ -1,0 +1,64 @@
+Ruta del archivo (Enter para 'archivo.ed'): 
+=== EDITOR DE ARCHIVOS (OS Project) ===
+  [i] Insertar texto
+  [d] Borrar carácter (backspace)
+  [l] Leer/ver texto actual
+  [c] Mover cursor (±N posiciones)
+  [b] Marcar rango como Bold
+  [s] Guardar archivo (write + compresión)
+  [m] Guardar con mmap
+  [r] Guardar con texto enriquecido (.rich)
+  [o] Abrir archivo
+  [q] Salir
+Opción: Texto a insertar (Enter para terminar):
+[OK] Texto insertado.
+
+=== EDITOR DE ARCHIVOS (OS Project) ===
+  [i] Insertar texto
+  [d] Borrar carácter (backspace)
+  [l] Leer/ver texto actual
+  [c] Mover cursor (±N posiciones)
+  [b] Marcar rango como Bold
+  [s] Guardar archivo (write + compresión)
+  [m] Guardar con mmap
+  [r] Guardar con texto enriquecido (.rich)
+  [o] Abrir archivo
+  [q] Salir
+Opción: [Guardando con write() en 'archivo_strace'...]
+[IO] Guardado: 25 bytes texto → 8 bytes comprimidos (68.0%)
+[OK] Archivo guardado.
+
+=== EDITOR DE ARCHIVOS (OS Project) ===
+  [i] Insertar texto
+  [d] Borrar carácter (backspace)
+  [l] Leer/ver texto actual
+  [c] Mover cursor (±N posiciones)
+  [b] Marcar rango como Bold
+  [s] Guardar archivo (write + compresión)
+  [m] Guardar con mmap
+  [r] Guardar con texto enriquecido (.rich)
+  [o] Abrir archivo
+  [q] Salir
+Opción: Saliendo...
+% time     seconds  usecs/call     calls    errors syscall
+------ ----------- ----------- --------- --------- ----------------
+ 23.91    0.000192          64         3           openat
+ 14.69    0.000118          29         4           mprotect
+ 12.20    0.000098          49         2           write
+  8.34    0.000067          22         3           close
+  6.10    0.000049          12         4           newfstatat
+  5.73    0.000046          15         3           brk
+  4.98    0.000040          20         2         1 arch_prctl
+  4.48    0.000036          36         1           munmap
+  3.36    0.000027           3         8           mmap
+  3.24    0.000026          13         2           read
+  2.62    0.000021          21         1           set_tid_address
+  2.62    0.000021          21         1           prlimit64
+  2.62    0.000021          21         1           getrandom
+  2.62    0.000021          21         1           rseq
+  2.49    0.000020          20         1           set_robust_list
+  0.00    0.000000           0         4           pread64
+  0.00    0.000000           0         1         1 access
+  0.00    0.000000           0         1           execve
+------ ----------- ----------- --------- --------- ----------------
+100.00    0.000803          18        43         2 total
