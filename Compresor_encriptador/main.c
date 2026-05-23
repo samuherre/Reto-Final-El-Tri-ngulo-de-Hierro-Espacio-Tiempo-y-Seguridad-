@@ -327,6 +327,11 @@ int main(void) {
             break;
         }
 
+        case 'q':
+            running = 0;
+            printf("Saliendo...\n");
+            break;
+
         default:
             printf("Opción no reconocida: '%c'\n", opcion);
         }
